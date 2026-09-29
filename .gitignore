@@ -1,0 +1,8 @@
+spar_nord_data/
+venv/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+veri.csv
+*.docx
