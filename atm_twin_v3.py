@@ -213,7 +213,7 @@ def get_triggered(row):
     pairs = [(f, abs(row[f"z_{f}"])) for f in feature_cols
              if pd.notna(row[f"z_{f}"]) and abs(row[f"z_{f}"]) > Z_THR]
     pairs.sort(key=lambda x: x[1], reverse=True)
-    return ", ".join([f"{n}({v:.1f}σ)" for n,v in pairs]) if pairs else "—"
+    return ", ".join([f"{n}({v:.1f}sd)" for n,v in pairs]) if pairs else "-"
 
 daily_v3["triggered_features"] = daily_v3.apply(get_triggered, axis=1)
 
@@ -232,7 +232,7 @@ if not row31.empty:
     win_e = win[win["low_txn"] == 0]
 
     print(f"\nTemizlenmiş ham satır: {int(r['txn_count'])}")
-    print(f"{'Feature':<20} {'28g-Ort':>9} {'28g-Std':>9} {'Bant [±2σ]':>18} {'Güncel':>9} {'Z':>7} {'Sapma%':>8} {'Durum':>9}")
+    print(f"{'Feature':<20} {'28g-Ort':>9} {'28g-Std':>9} {'Bant [+-2sd]':>18} {'Güncel':>9} {'Z':>7} {'Sapma%':>8} {'Durum':>9}")
     print("-" * 96)
     for f in feature_cols:
         mu   = win_e[f].mean()
@@ -246,7 +246,7 @@ if not row31.empty:
         if   abs(z_v) >= 3.5:  durum = "KRİTİK"
         elif abs(z_v) >= Z_THR: durum = "Dikkat"
         else:                   durum = "Normal"
-        print(f"{f:<20} {mu:>9.3f} {sig:>9.3f} [{lo:.2f} — {hi:.2f}]{'':<2} {curr:>9.3f} {z_v:>7.2f} {pct:>8.1f}% {durum:>9}")
+        print(f"{f:<20} {mu:>9.3f} {sig:>9.3f} [{lo:.2f} - {hi:.2f}]{'':<2} {curr:>9.3f} {z_v:>7.2f} {pct:>8.1f}% {durum:>9}")
 
     if_s = r.get("if_score", float("nan"))
     if_a = int(r.get("if_anomaly", 0)) if pd.notna(r.get("if_anomaly")) else 0
@@ -255,7 +255,7 @@ if not row31.empty:
     print(f"Z-Score Anomali      : {'EVET' if r['zscore_anomaly'] else 'HAYIR'}")
     print(f"Tetikleyen           : {r['triggered_features']}")
     ctx = r["calendar_context"]
-    print(f"calendar_context     : {ctx if ctx else '—'}")
+    print(f"calendar_context     : {ctx if ctx else '-'}")
 
 # ── 6. HAFTALIK BEHAVIORAL PROFILE ──────────────────────────────────────────
 print("\n" + "=" * 65)
@@ -382,7 +382,7 @@ for ax, (feat, col, lbl) in zip(axes, [
     # shift(1).rolling() — model baseline ile tutarlı; güncel gün kendi baseline'ına katılmaz
     rm  = sub[feat].shift(1).rolling(WINDOW_D, min_periods=7).mean()
     rs  = sub[feat].shift(1).rolling(WINDOW_D, min_periods=7).std().fillna(0)
-    ax.fill_between(sub["date"], (rm-2*rs).clip(lower=0), rm+2*rs, alpha=0.15, color=col, label="±2σ bant")
+    ax.fill_between(sub["date"], (rm-2*rs).clip(lower=0), rm+2*rs, alpha=0.15, color=col, label="+-2sd bant")
     ax.plot(sub["date"], sub[feat], color=col, lw=1.1, label=lbl)
     ax.plot(sub["date"], rm, color=col, lw=1.5, ls="--", alpha=0.5, label="28g ort.")
     bth = sub[sub["date"].isin(both_dates)]
@@ -415,7 +415,7 @@ wm = atm15_wk["week_txn_total"].shift(1).rolling(WINDOW_W, min_periods=4).mean()
 ws = atm15_wk["week_txn_total"].shift(1).rolling(WINDOW_W, min_periods=4).std().fillna(0)
 ax.plot(atm15_wk["week_start"], wm, color="orange", lw=1.5, label="8h ort.")
 ax.fill_between(atm15_wk["week_start"], (wm-2*ws).clip(lower=0), wm+2*ws,
-                alpha=0.15, color="orange", label="±2σ bant")
+                alpha=0.15, color="orange", label="+-2sd bant")
 ax.set_ylabel("Haftalık Toplam İşlem", fontsize=9)
 ax.legend(fontsize=8)
 ax.grid(True, alpha=0.2)
