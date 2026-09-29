@@ -2,7 +2,9 @@
 MIN_TXN Sistematik Tarama — 3'ten 30'a
 Z-score bir kez hesaplanır (maskeleme yok); her eşik için maskeleme uygulanır.
 Baseline sabit tutulmuş yaklaşım: stability elbow tespiti için yeterli doğruluk.
+Final pipeline (atm_twin_v3.py) baseline'ı yalnızca geçerli günlerden hesaplar.
 """
+import pathlib
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -11,8 +13,9 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings("ignore")
 
-DATA_DIR = r"C:\Users\Msi\source\repos\LeaderElectionDemo\FraudDemo\spar_nord_data"
-OUT_DIR  = r"C:\Users\Msi\source\repos\LeaderElectionDemo\FraudDemo"
+BASE_DIR = pathlib.Path(__file__).parent
+DATA_DIR = BASE_DIR / "spar_nord_data"
+OUT_DIR  = BASE_DIR
 WINDOW_D = 28
 Z_THR    = 2.5
 MIN_STD  = 0.01
@@ -21,8 +24,8 @@ MIN_STD  = 0.01
 # 1. VERİ + FEATURE ENGINEERING (bir kez)
 # ═══════════════════════════════════════════════════════════════════════════════
 print("Veri yükleniyor...")
-p1 = pd.read_csv(f"{DATA_DIR}/atm_data_part1.csv", low_memory=False)
-p2 = pd.read_csv(f"{DATA_DIR}/atm_data_part2.csv", low_memory=False)
+p1 = pd.read_csv(DATA_DIR / "atm_data_part1.csv", low_memory=False)
+p2 = pd.read_csv(DATA_DIR / "atm_data_part2.csv", low_memory=False)
 df = pd.concat([p1, p2], ignore_index=True).drop_duplicates()
 df["date"] = pd.to_datetime(
     df["year"].astype(str) + "-" +
@@ -248,7 +251,7 @@ ax.set_xticks(SWEEP_VALS)
 ax.tick_params(axis="x", labelsize=7)
 
 plt.tight_layout()
-plt.savefig(f"{OUT_DIR}/13_mintxn_sweep.png", dpi=120, bbox_inches="tight")
+plt.savefig(OUT_DIR / "13_mintxn_sweep.png", dpi=120, bbox_inches="tight")
 plt.close()
 print("\nGrafik: 13_mintxn_sweep.png")
 
@@ -262,52 +265,35 @@ print("=" * 65)
 # Delta serisini yazdır ve elbow noktasını tespit et
 deltas = sweep[["min_txn","median_top10_maxz","delta_med","excl_pct","z_anom_pct"]].copy()
 
-# İki kriter:
-# A) median_top10_maxz'nin büyük düşüşler yaşandıktan sonra <1.0 delta'ya girdiği ilk nokta
-# B) top-10 içindeki en düşük txn_count'un MIN_TXN'e eşit veya yakın olduğu nokta
+# Stability elbow: median_top10_maxz büyük düşüşlerden sonra |Δ| < 1.0'a girdiği ilk nokta.
+# valid = daily[txn_count >= mt] filtresinden sonra top-10'un min txn_count'u
+# her zaman >= mt olur (tautoloji) — bu bağımsız bir kriter değildir.
+crit_a = (
+    sweep[sweep["delta_med"].fillna(999) < 1.0].iloc[0]["min_txn"]
+    if not sweep[sweep["delta_med"].fillna(999) < 1.0].empty else None
+)
 
-print("\nKriterler:")
-print("  A) |Δ median_top10_maxz| < 1.0 olan ilk MIN_TXN")
-print("  B) top-10 min txn_count >= MIN_TXN (yapay sapma kalmadı)")
-print()
+print(f"\n  Stability elbow (|Δ| < 1.0 ilk nokta)  : MIN_TXN = {crit_a}")
+print(f"  Stability elbow (Grafik)                : MIN_TXN = {elbow_x if not stable.empty else 'N/A'}")
 
-# Kriter A
-crit_a = sweep[sweep["delta_med"].fillna(999) < 1.0].iloc[0]["min_txn"] if not sweep[sweep["delta_med"].fillna(999) < 1.0].empty else None
-
-# Kriter B: her eşik için top-10 min txn
-crit_b_data = []
-for mt in SWEEP_VALS:
-    valid = daily[daily["txn_count"] >= mt]
-    top10_min = valid.nlargest(10, "raw_max_z")["txn_count"].min()
-    crit_b_data.append({"min_txn": mt, "top10_min_txn": top10_min})
-crit_b_df = pd.DataFrame(crit_b_data)
-# İlk nokta: top10_min_txn >= MIN_TXN (top-10 içindeki en az işlemli gün eşiğin altında değil)
-crit_b_rows = crit_b_df[crit_b_df["top10_min_txn"] >= crit_b_df["min_txn"]]
-crit_b = int(crit_b_rows.iloc[0]["min_txn"]) if not crit_b_rows.empty else None
-
-print(f"  Kriter A (|Δ|<1.0 ilk nokta)            : MIN_TXN = {crit_a}")
-print(f"  Kriter B (top-10 hepsi >= eşik)         : MIN_TXN = {crit_b}")
-
-# Elbow grafikteki nokta
-print(f"\n  Stability elbow (Grafik)                : MIN_TXN = {elbow_x if not stable.empty else 'N/A'}")
-
-# Öneri
-recommended = max(filter(None, [crit_a, crit_b]), default=10)
+# Öneri: elbow'un bir sonraki adımı — stabilizasyon başladıktan hemen sonra,
+# veri kaybı hâlâ düşükken.
+recommended = (int(crit_a) + 1) if crit_a is not None else 8
 r_row = sweep[sweep["min_txn"] == recommended].iloc[0]
 print(f"""
 Öneri: MIN_TXN = {int(recommended)}
 
   Sayısal gerekçe:
-    Excluded %         : {r_row['excl_pct']:.1f}%  (veri kaybı kabul edilebilir)
-    Z-score anomali %  : {r_row['z_anom_pct']:.1f}%
-    Median top-10 max_z: {r_row['median_top10_maxz']:.2f}  (bu noktadan sonra Δ < 1.0)
-    ATM 15 / 31 Ağu    : {'EVET' if r_row['atm15_anom'] else 'HAYIR'}
+    Stability elbow     : MIN_TXN = {int(crit_a) if crit_a else '?'} (|Δ median top-10 max_z| < 1.0 ilk kez)
+    Veri kaybı (excl%)  : {r_row['excl_pct']:.1f}%  (kabul edilebilir)
+    Z-score anomali %   : {r_row['z_anom_pct']:.1f}%
+    Median top-10 max_z : {r_row['median_top10_maxz']:.2f}
+    ATM 15 / 31 Ağu     : {'EVET' if r_row['atm15_anom'] else 'HAYIR'}  (referans örnek stabil)
 
-  MIN_TXN < {int(recommended)}: top-10 içinde txn_count eşiğin altında günler var;
-    oran feature'ları örneksizlikten kaynaklanan yapay uç değerler üretiyor.
-  MIN_TXN > {int(recommended)}: ek veri kaybı var, anomali oranı daha az değişiyor;
-    marginal kazanç giderek azalıyor.
+  MIN_TXN < {int(recommended)}: median top-10 max_z henüz stabilize olmamış;
+    düşük txn günlerinden kaynaklanan yapay uç z-değerleri top-10'u baskılıyor.
+  MIN_TXN > {int(recommended)}: ek veri kaybı artar, marginal kazanım azalır.
 """)
 
-sweep.to_csv(f"{OUT_DIR}/mintxn_sweep_results.csv", index=False)
+sweep.to_csv(OUT_DIR / "mintxn_sweep_results.csv", index=False)
 print("Sweep tablosu: mintxn_sweep_results.csv")

@@ -1,3 +1,4 @@
+import pathlib
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -8,8 +9,10 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings("ignore")
 
-DATA_DIR = r"C:\Users\Msi\source\repos\LeaderElectionDemo\FraudDemo\spar_nord_data"
-OUT_DIR  = r"C:\Users\Msi\source\repos\LeaderElectionDemo\FraudDemo"
+BASE_DIR = pathlib.Path(__file__).parent
+DATA_DIR = BASE_DIR / "spar_nord_data"
+OUT_DIR  = BASE_DIR
+
 WINDOW_D = 28
 WINDOW_W = 8
 Z_THR    = 2.5
@@ -20,8 +23,8 @@ TARGET_DATE = pd.Timestamp("2017-08-31")
 
 # ── 1. VERİ YÜKLE + TEMİZLE + FEATURE ENGINEERING ──────────────────────────
 print("Veri yükleniyor...")
-p1 = pd.read_csv(f"{DATA_DIR}/atm_data_part1.csv", low_memory=False)
-p2 = pd.read_csv(f"{DATA_DIR}/atm_data_part2.csv", low_memory=False)
+p1 = pd.read_csv(DATA_DIR / "atm_data_part1.csv", low_memory=False)
+p2 = pd.read_csv(DATA_DIR / "atm_data_part2.csv", low_memory=False)
 df_raw = pd.concat([p1, p2], ignore_index=True)
 # Duplicate: 33 orijinal sütunun tamamı birebir eşit olan satırları kaldır.
 # is_dup gibi türetilmiş kolon varken drop_duplicates() çağırmak partial cleaning yapar;
@@ -94,10 +97,13 @@ def compute_zscores(df_in, min_txn):
     d["low_txn"] = (d["txn_count"] < min_txn).astype(int)
 
     def rzs(group, col):
-        # z = (güncel - 28g_ort) / 28g_std  —  her ATM kendi geçmişiyle kıyaslanır
-        rm   = group[col].shift(1).rolling(WINDOW_D, min_periods=7).mean()
-        rs   = group[col].shift(1).rolling(WINDOW_D, min_periods=7).std()
-        # rolling_std < MIN_STD ise z'yi 0 yap: çok düşük varyansta matematiksel şişme önlenir
+        # z = (güncel - baseline_ort) / baseline_std  —  her ATM kendi geçmişiyle kıyaslanır.
+        # Baseline yalnızca geçerli günlerden (txn_count >= min_txn) hesaplanır:
+        # düşük txn günleri NaN olarak maskelenir, rolling hesabı NaN'ları atlar.
+        col_valid = group[col].where(group["txn_count"] >= min_txn, other=np.nan)
+        rm   = col_valid.shift(1).rolling(WINDOW_D, min_periods=7).mean()
+        rs   = col_valid.shift(1).rolling(WINDOW_D, min_periods=7).std()
+        # rolling_std < MIN_STD ise z'yi 0 yap: çok düşük varyansta matematiksel şişme önlenir.
         safe = rs.where(rs >= MIN_STD, other=np.nan)
         z    = (group[col] - rm) / safe
         z    = z.fillna(0)
@@ -203,7 +209,7 @@ daily_v3 = daily_v3.merge(
 
 def get_triggered(row):
     if row["low_txn"] == 1:
-        return "profil_disi (txn<8)"
+        return f"profil_disi (txn<{CHOSEN_MIN_TXN})"
     pairs = [(f, abs(row[f"z_{f}"])) for f in feature_cols
              if pd.notna(row[f"z_{f}"]) and abs(row[f"z_{f}"]) > Z_THR]
     pairs.sort(key=lambda x: x[1], reverse=True)
@@ -225,7 +231,7 @@ if not row31.empty:
     win = atm15.iloc[max(0, idx - WINDOW_D): idx]
     win_e = win[win["low_txn"] == 0]
 
-    print(f"\nTemizlenmiş ham satır: 80")
+    print(f"\nTemizlenmiş ham satır: {int(r['txn_count'])}")
     print(f"{'Feature':<20} {'28g-Ort':>9} {'28g-Std':>9} {'Bant [±2σ]':>18} {'Güncel':>9} {'Z':>7} {'Sapma%':>8} {'Durum':>9}")
     print("-" * 96)
     for f in feature_cols:
@@ -373,8 +379,9 @@ for ax, (feat, col, lbl) in zip(axes, [
     ("hour_entropy","#1A6B6B", "Saatlik Entropi"),
 ]):
     sub = atm15_plot.dropna(subset=[feat])
-    rm  = sub[feat].rolling(WINDOW_D, min_periods=7).mean()
-    rs  = sub[feat].rolling(WINDOW_D, min_periods=7).std().fillna(0)
+    # shift(1).rolling() — model baseline ile tutarlı; güncel gün kendi baseline'ına katılmaz
+    rm  = sub[feat].shift(1).rolling(WINDOW_D, min_periods=7).mean()
+    rs  = sub[feat].shift(1).rolling(WINDOW_D, min_periods=7).std().fillna(0)
     ax.fill_between(sub["date"], (rm-2*rs).clip(lower=0), rm+2*rs, alpha=0.15, color=col, label="±2σ bant")
     ax.plot(sub["date"], sub[feat], color=col, lw=1.1, label=lbl)
     ax.plot(sub["date"], rm, color=col, lw=1.5, ls="--", alpha=0.5, label="28g ort.")
@@ -396,7 +403,7 @@ axes[0].set_title(f"ATM {TARGET_ATM} — Günlük Profil (MIN_TXN={CHOSEN_MIN_TX
                   "Gri dikey: month_end_window bağlamı | Turuncu: 31 Ağustos",
                   fontsize=10, fontweight="bold")
 plt.tight_layout()
-plt.savefig(f"{OUT_DIR}/10_v3_atm15_daily.png", dpi=120, bbox_inches="tight")
+plt.savefig(OUT_DIR / "10_v3_atm15_daily.png", dpi=120, bbox_inches="tight")
 plt.close()
 print("  10_v3_atm15_daily.png")
 
@@ -404,8 +411,8 @@ fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 atm15_wk = weekly_base[weekly_base["atm_id"]==TARGET_ATM].sort_values("week_start")
 ax = axes[0]
 ax.bar(atm15_wk["week_start"], atm15_wk["week_txn_total"], color="#1E3A5F", alpha=0.7, width=5)
-wm = atm15_wk["week_txn_total"].rolling(WINDOW_W, min_periods=4).mean()
-ws = atm15_wk["week_txn_total"].rolling(WINDOW_W, min_periods=4).std().fillna(0)
+wm = atm15_wk["week_txn_total"].shift(1).rolling(WINDOW_W, min_periods=4).mean()
+ws = atm15_wk["week_txn_total"].shift(1).rolling(WINDOW_W, min_periods=4).std().fillna(0)
 ax.plot(atm15_wk["week_start"], wm, color="orange", lw=1.5, label="8h ort.")
 ax.fill_between(atm15_wk["week_start"], (wm-2*ws).clip(lower=0), wm+2*ws,
                 alpha=0.15, color="orange", label="±2σ bant")
@@ -424,7 +431,7 @@ ax.set_ylabel("z_week_txn_total", fontsize=9)
 ax.set_ylim(-5, 5)
 ax.grid(True, alpha=0.2)
 plt.tight_layout()
-plt.savefig(f"{OUT_DIR}/11_v3_atm15_weekly.png", dpi=120, bbox_inches="tight")
+plt.savefig(OUT_DIR / "11_v3_atm15_weekly.png", dpi=120, bbox_inches="tight")
 plt.close()
 print("  11_v3_atm15_weekly.png")
 
@@ -448,11 +455,11 @@ ax.legend(fontsize=9)
 ax.tick_params(axis="x", labelsize=6, rotation=90)
 ax.grid(True, axis="y", alpha=0.25)
 plt.tight_layout()
-plt.savefig(f"{OUT_DIR}/12_v3_fleet_anomaly.png", dpi=120, bbox_inches="tight")
+plt.savefig(OUT_DIR / "12_v3_fleet_anomaly.png", dpi=120, bbox_inches="tight")
 plt.close()
 print("  12_v3_fleet_anomaly.png")
 
-atm_sum.to_csv(f"{OUT_DIR}/atm_v3_summary.csv", index=False)
+atm_sum.to_csv(OUT_DIR / "atm_v3_summary.csv", index=False)
 print("\n" + "="*65)
 print(f"V3 TAMAMLANDI (MIN_TXN={CHOSEN_MIN_TXN})")
 print("="*65)
